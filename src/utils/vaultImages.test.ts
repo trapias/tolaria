@@ -124,6 +124,122 @@ describe('resolveImageUrls', () => {
 
     expect(resolveImageUrls(markdown, '/vault')).toBe(markdown)
   })
+
+  it('matches markdown image URLs containing raw spaces', () => {
+    tauriMode = true
+    const markdown = '![shot](attachments/My Screenshot.png)'
+
+    expect(resolveImageUrls(markdown, '/vault')).toBe(
+      `![shot](${assetUrl('/vault/attachments/My Screenshot.png')})`,
+    )
+  })
+
+  it('preserves title when URL contains spaces', () => {
+    tauriMode = true
+    const markdown = '![shot](attachments/My Screenshot.png "starter vault")'
+
+    expect(resolveImageUrls(markdown, '/vault')).toBe(
+      `![shot](${assetUrl('/vault/attachments/My Screenshot.png')} "starter vault")`,
+    )
+  })
+})
+
+describe('resolveImageUrls — note-relative paths', () => {
+  it('resolves ./img/foo.png against the note directory', () => {
+    tauriMode = true
+    const notePath = '/vault/folder/note.md'
+    const markdown = '![shot](./img/foo.png)'
+
+    expect(resolveImageUrls(markdown, '/vault', notePath)).toBe(
+      `![shot](${assetUrl('/vault/folder/img/foo.png')})`,
+    )
+  })
+
+  it('resolves ../shared/img.png with parent traversal', () => {
+    tauriMode = true
+    const notePath = '/vault/folder/sub/note.md'
+    const markdown = '![shot](../shared/img.png)'
+
+    expect(resolveImageUrls(markdown, '/vault', notePath)).toBe(
+      `![shot](${assetUrl('/vault/folder/shared/img.png')})`,
+    )
+  })
+
+  it('resolves bare relative paths (no leading dot) against the note directory', () => {
+    tauriMode = true
+    const notePath = '/vault/folder/note.md'
+    const markdown = '![shot](img/foo.png)'
+
+    expect(resolveImageUrls(markdown, '/vault', notePath)).toBe(
+      `![shot](${assetUrl('/vault/folder/img/foo.png')})`,
+    )
+  })
+
+  it('resolves note-relative paths containing spaces', () => {
+    tauriMode = true
+    const notePath = '/vault/Doc/DocSolutionsCenter/MeetingReport_Kartiq_20260504.md'
+    const markdown =
+      '![shot](./img/MeetingReport_Kartiq_20260504/Screenshot 2026-05-04 alle 10.33.01.png)'
+
+    expect(resolveImageUrls(markdown, '/vault', notePath)).toBe(
+      `![shot](${assetUrl(
+        '/vault/Doc/DocSolutionsCenter/img/MeetingReport_Kartiq_20260504/Screenshot 2026-05-04 alle 10.33.01.png',
+      )})`,
+    )
+  })
+
+  it('keeps attachments/ as vault-relative even when notePath is provided', () => {
+    tauriMode = true
+    const notePath = '/vault/folder/note.md'
+    const markdown = '![shot](attachments/file.png)'
+
+    expect(resolveImageUrls(markdown, '/vault', notePath)).toBe(
+      `![shot](${assetUrl('/vault/attachments/file.png')})`,
+    )
+  })
+
+  it('decodes %-encoded note-relative paths', () => {
+    tauriMode = true
+    const notePath = '/vault/folder/note.md'
+    const markdown = '![shot](./img/My%20Photo.png)'
+
+    expect(resolveImageUrls(markdown, '/vault', notePath)).toBe(
+      `![shot](${assetUrl('/vault/folder/img/My Photo.png')})`,
+    )
+  })
+
+  it('resolves note-relative paths on Windows', () => {
+    tauriMode = true
+    const notePath = 'C:\\Users\\a\\Vault\\folder\\note.md'
+    const markdown = '![shot](./img/foo.png)'
+
+    expect(resolveImageUrls(markdown, 'C:\\Users\\a\\Vault', notePath)).toBe(
+      `![shot](${assetUrl('C:\\Users\\a\\Vault\\folder\\img\\foo.png')})`,
+    )
+  })
+
+  it('resolves note-relative paths when the note is at the filesystem root', () => {
+    // Edge case: notePath has its only separator at index 0.
+    // Previously the directory was reported as the full notePath, so the
+    // image filename ended up appended to the note's filename.
+    tauriMode = true
+    const notePath = '/note.md'
+    const markdown = '![shot](./img/foo.png)'
+
+    expect(resolveImageUrls(markdown, '/', notePath)).toBe(
+      `![shot](${assetUrl('/img/foo.png')})`,
+    )
+  })
+
+  it('resolves note-relative paths when notePath has no separator', () => {
+    tauriMode = true
+    const notePath = 'note.md'
+    const markdown = '![shot](img/foo.png)'
+
+    expect(resolveImageUrls(markdown, '/vault', notePath)).toBe(
+      `![shot](${assetUrl('./img/foo.png')})`,
+    )
+  })
 })
 
 describe('portableImageUrls', () => {
@@ -161,11 +277,14 @@ describe('portableImageUrls', () => {
     expect(portableImageUrls(markdown, '')).toBe(markdown)
   })
 
-  it('leaves asset URLs from other vaults unchanged', () => {
+  it('unwraps asset URLs from other vaults to absolute filesystem paths', () => {
+    // The internal asset:// scheme must never survive into saved markdown,
+    // even for URLs that point outside the current vault. Falling back to the
+    // decoded absolute path keeps the file readable and portable.
     const url = assetUrl('/other-vault/attachments/file.png')
     const markdown = `![alt](${url})`
 
-    expect(portableImageUrls(markdown, '/vault')).toBe(markdown)
+    expect(portableImageUrls(markdown, '/vault')).toBe('![alt](/other-vault/attachments/file.png)')
   })
 
   it('leaves relative and external paths unchanged', () => {
@@ -190,6 +309,57 @@ describe('portableImageUrls', () => {
 
     expect(portableImageUrls(markdown, '/vault')).toBe('![shot](attachments/a.png "starter vault")')
   })
+
+  it('falls back to absolute filesystem path when asset is outside vault and no notePath', () => {
+    // Without a notePath we cannot compute a note-relative form. Returning the
+    // decoded absolute filesystem path keeps the markdown free of the internal
+    // asset:// scheme so it survives round-tripping and inspection by other tools.
+    const url = assetUrl('/Users/me/external/photo.png')
+    const markdown = `![alt](${url})`
+
+    expect(portableImageUrls(markdown, '/vault')).toBe('![alt](/Users/me/external/photo.png)')
+  })
+
+  it('round-trips absolute filesystem paths outside the vault', () => {
+    tauriMode = true
+    const markdown = '![alt](/Users/me/external/photo.png)'
+
+    expect(portableImageUrls(resolveImageUrls(markdown, '/vault'), '/vault')).toBe(markdown)
+  })
+})
+
+describe('portableImageUrls — note-relative round-trip', () => {
+  it('emits note-relative paths for images inside the note directory', () => {
+    const url = assetUrl('/vault/folder/img/foo.png')
+    const markdown = `![shot](${url})`
+    const notePath = '/vault/folder/note.md'
+
+    expect(portableImageUrls(markdown, '/vault', notePath)).toBe('![shot](./img/foo.png)')
+  })
+
+  it('prefers attachments/ when image is in vault attachments folder', () => {
+    const url = assetUrl('/vault/attachments/foo.png')
+    const markdown = `![shot](${url})`
+    const notePath = '/vault/folder/note.md'
+
+    expect(portableImageUrls(markdown, '/vault', notePath)).toBe('![shot](attachments/foo.png)')
+  })
+
+  it('emits ../ traversal when image is above the note directory', () => {
+    const url = assetUrl('/vault/folder/shared/img.png')
+    const markdown = `![shot](${url})`
+    const notePath = '/vault/folder/sub/note.md'
+
+    expect(portableImageUrls(markdown, '/vault', notePath)).toBe('![shot](../shared/img.png)')
+  })
+
+  it('preserves spaces in note-relative paths on round-trip', () => {
+    const url = assetUrl('/vault/folder/img/My Photo.png')
+    const markdown = `![shot](${url})`
+    const notePath = '/vault/folder/note.md'
+
+    expect(portableImageUrls(markdown, '/vault', notePath)).toBe('![shot](./img/My Photo.png)')
+  })
 })
 
 describe('resolveImageUrls / portableImageUrls round-trip', () => {
@@ -198,5 +368,25 @@ describe('resolveImageUrls / portableImageUrls round-trip', () => {
     const markdown = '![shot](attachments/file.png)'
 
     expect(portableImageUrls(resolveImageUrls(markdown, '/vault'), '/vault')).toBe(markdown)
+  })
+
+  it('keeps note-relative markdown stable', () => {
+    tauriMode = true
+    const notePath = '/vault/folder/note.md'
+    const markdown = '![shot](./img/foo.png)'
+
+    expect(
+      portableImageUrls(resolveImageUrls(markdown, '/vault', notePath), '/vault', notePath),
+    ).toBe(markdown)
+  })
+
+  it('keeps note-relative markdown with spaces stable', () => {
+    tauriMode = true
+    const notePath = '/vault/folder/note.md'
+    const markdown = '![shot](./img/My Photo.png)'
+
+    expect(
+      portableImageUrls(resolveImageUrls(markdown, '/vault', notePath), '/vault', notePath),
+    ).toBe(markdown)
   })
 })
